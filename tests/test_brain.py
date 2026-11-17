@@ -1,11 +1,15 @@
 import json
 from urllib.request import Request
+from urllib.error import HTTPError
 
 from assistant.core.brain import Brain
 from assistant.core.logger import ActionLogger
 from assistant.core.providers.base import ModelDecision, RateLimitError
 from assistant.core.providers import create_provider
 from assistant.core.providers.ollama import OllamaProvider
+from assistant.core.providers.groq import GroqProvider
+from assistant.core.confirm import confirm_action
+from assistant.core.registry import discover_skills
 from assistant.skills.base import Result, Skill
 
 
@@ -133,3 +137,47 @@ def test_provider_is_selected_from_configuration():
     provider = create_provider({"name": "ollama", "model": "llama3.1:8b"})
 
     assert isinstance(provider, OllamaProvider)
+
+
+def test_confirm_action_accepts_only_explicit_yes():
+    assert confirm_action("Confirm? ", lambda _: "yes") is True
+    assert confirm_action("Confirm? ", lambda _: "haan") is True
+    assert confirm_action("Confirm? ", lambda _: "maybe") is False
+    assert confirm_action("Confirm? ", lambda _: "") is False
+
+
+def test_action_logger_writes_valid_json_lines(tmp_path):
+    log_path = tmp_path / "actions.jsonl"
+    logger = ActionLogger(log_path)
+    logger.log("hello", "get_time", {}, False, Result(ok=True, reply="It's 1:00 PM."))
+    logger.log("unknown", None, {}, False, Result(ok=False, reply="Not configured."))
+
+    lines = log_path.read_text(encoding="utf-8").splitlines()
+    records = [json.loads(line) for line in lines]
+    assert len(records) == 2
+    assert records[0]["raw_command"] == "hello"
+    assert records[0]["confirmed"] is False
+    assert records[1]["skill"] is None
+
+
+def test_registry_auto_discovers_phase_one_skills():
+    skills = discover_skills()
+
+    assert set(skills) == {"get_time", "open_app", "open_website"}
+
+
+def test_groq_provider_maps_http_429_to_rate_limit(monkeypatch):
+    provider = GroqProvider({"model": "test-tool-model"})
+    provider.api_key = "test-key"
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(request.full_url, 429, "Too Many Requests", {}, None)
+
+    monkeypatch.setattr("assistant.core.providers.groq.urlopen", fake_urlopen)
+
+    try:
+        provider.choose("hello", [], "Be concise.")
+    except RateLimitError as error:
+        assert str(error) == "Groq is rate-limited; please try again shortly."
+    else:
+        raise AssertionError("Expected Groq rate-limit handling")
