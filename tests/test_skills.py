@@ -226,6 +226,60 @@ def test_auto_send_wrong_foreground_window_logs_details(tmp_path):
     assert presses == []
 
 
+def test_auto_send_exact_title_does_not_pass_for_wrong_process(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: []\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+    presses = []
+    skill = SendWhatsAppSkill(
+        contacts_path,
+        launcher=lambda _: True,
+        window_details=lambda: ("chrome.exe", "WhatsApp"),
+        enter_presser=lambda: presses.append(True),
+        sleeper=lambda _: None,
+    )
+    skill.auto_send = True
+    skill.send_delay_seconds = 0
+    prepared = skill.prepare(contact="Ali", text="Hello")
+
+    result = skill.run(**prepared.params)
+
+    assert result.auto_send_window_check_passed is False
+    assert result.foreground_process == "chrome.exe"
+    assert result.foreground_title == "WhatsApp"
+    assert "needs you to press Send" in result.reply
+    assert presses == []
+
+
+def test_auto_send_requires_process_match_even_if_title_differs(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: []\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+    presses = []
+    skill = SendWhatsAppSkill(
+        contacts_path,
+        launcher=lambda _: True,
+        window_details=lambda: ("WhatsApp.Root", "Message - WhatsApp"),
+        enter_presser=lambda: presses.append(True),
+        sleeper=lambda _: None,
+    )
+    skill.auto_send = True
+    skill.send_delay_seconds = 0
+    prepared = skill.prepare(contact="Ali", text="Hello")
+
+    result = skill.run(**prepared.params)
+
+    assert result.auto_send_window_check_passed is True
+    assert result.foreground_process == "WhatsApp.Root"
+    assert result.foreground_title == "Message - WhatsApp"
+    assert result.reply == "Enter pressed in WhatsApp."
+    assert presses == [True]
+
+
 def test_auto_send_library_missing_needs_manual_send(tmp_path):
     contacts_path = tmp_path / "contacts.yaml"
     contacts_path.write_text(

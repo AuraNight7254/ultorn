@@ -179,8 +179,7 @@ class SendWhatsAppSkill(Skill):
             process_name, title = "", ""
 
         process_matches = process_name.strip().casefold() == "whatsapp.root"
-        title_matches = title.strip() == "WhatsApp"
-        if not process_matches and not title_matches:
+        if not process_matches:
             return Result(
                 ok=True,
                 reply="The message is typed but needs you to press Send.",
