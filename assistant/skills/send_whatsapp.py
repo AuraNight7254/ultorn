@@ -2,6 +2,8 @@ from pathlib import Path
 from urllib.parse import quote
 import os
 import webbrowser
+import ctypes
+import time
 
 from assistant.core.contacts import find_contacts, load_contacts
 from assistant.skills.base import PreparedAction, Result, Skill
@@ -12,6 +14,53 @@ def open_whatsapp_link(url: str) -> bool:
         os.startfile(url)
         return True
     return webbrowser.open(url)
+
+
+def get_foreground_window_details() -> tuple[str, str]:
+    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if not hwnd:
+        return "", ""
+
+    length = ctypes.windll.user32.GetWindowTextLengthW(hwnd)
+    title_buffer = ctypes.create_unicode_buffer(length + 1)
+    ctypes.windll.user32.GetWindowTextW(hwnd, title_buffer, length + 1)
+
+    pid = ctypes.c_ulong()
+    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+    process_handle = ctypes.windll.kernel32.OpenProcess(
+        0x0400 | 0x0010,
+        False,
+        pid.value,
+    )
+    process_name = ""
+    if process_handle:
+        image_buffer = ctypes.create_unicode_buffer(260)
+        size = ctypes.c_ulong(260)
+        if ctypes.windll.kernel32.QueryFullProcessImageNameW(
+            process_handle,
+            0,
+            image_buffer,
+            ctypes.byref(size),
+        ):
+            process_name = os.path.basename(image_buffer.value)
+        ctypes.windll.kernel32.CloseHandle(process_handle)
+    return process_name, title_buffer.value
+
+
+def press_enter_in_foreground_window() -> None:
+    try:
+        from pywinauto import Desktop
+    except ImportError as error:
+        raise ImportError("pywinauto is not installed.") from error
+
+    import ctypes
+
+    hwnd = ctypes.windll.user32.GetForegroundWindow()
+    if not hwnd:
+        raise OSError("No foreground window is available.")
+    window = Desktop(backend="uia").window(handle=hwnd)
+    window.set_focus()
+    window.type_keys("{ENTER}")
 
 
 class SendWhatsAppSkill(Skill):
@@ -28,9 +77,21 @@ class SendWhatsAppSkill(Skill):
     }
     risk = "confirm"
 
-    def __init__(self, contacts_path: Path | None = None, launcher=open_whatsapp_link):
+    def __init__(
+        self,
+        contacts_path: Path | None = None,
+        launcher=open_whatsapp_link,
+        window_details=get_foreground_window_details,
+        enter_presser=press_enter_in_foreground_window,
+        sleeper=time.sleep,
+    ):
         self.contacts_path = contacts_path
         self.launcher = launcher
+        self.window_details = window_details
+        self.enter_presser = enter_presser
+        self.sleeper = sleeper
+        self.auto_send = False
+        self.send_delay_seconds = 3
 
     def prepare(self, **params) -> PreparedAction:
         contact_name = params.get("contact")
@@ -94,7 +155,58 @@ class SendWhatsAppSkill(Skill):
             return Result(ok=False, reply=f"I couldn't open WhatsApp: {error}.")
         if opened is False:
             return Result(ok=False, reply="I couldn't open WhatsApp.")
+
+        if not self.auto_send:
+            return Result(
+                ok=True,
+                reply="WhatsApp was opened with the message ready; press Send.",
+                auto_send_attempted=False,
+                auto_send_window_check_passed=None,
+            )
+
+        if self.send_delay_seconds < 0:
+            return Result(
+                ok=False,
+                reply="The WhatsApp message is typed but needs you to press Send.",
+                auto_send_attempted=True,
+                auto_send_window_check_passed=None,
+            )
+
+        self.sleeper(self.send_delay_seconds)
+        try:
+            process_name, title = self.window_details()
+        except (OSError, ValueError):
+            process_name, title = "", ""
+
+        process_matches = process_name.strip().casefold() == "whatsapp.root"
+        title_matches = title.strip() == "WhatsApp"
+        if not process_matches and not title_matches:
+            return Result(
+                ok=True,
+                reply="The message is typed but needs you to press Send.",
+                auto_send_attempted=True,
+                auto_send_window_check_passed=False,
+                foreground_process=process_name,
+                foreground_title=title,
+            )
+
+        try:
+            self.enter_presser()
+        except (ImportError, OSError, RuntimeError):
+            return Result(
+                ok=True,
+                reply="The message is typed but needs you to press Send.",
+                auto_send_attempted=True,
+                auto_send_window_check_passed=True,
+                foreground_process=process_name,
+                foreground_title=title,
+            )
+
         return Result(
             ok=True,
-            reply="WhatsApp was opened with the message ready; press Send.",
+            reply="Enter pressed in WhatsApp.",
+            auto_send_attempted=True,
+            auto_send_window_check_passed=True,
+            foreground_process=process_name,
+            foreground_title=title,
         )

@@ -246,3 +246,37 @@ def test_brain_asks_which_contact_for_alias_ambiguity(tmp_path):
     assert "press Send" in reply
     assert choice_calls[0][0] == "Which one?"
     assert len(choice_calls[0][1]) == 2
+
+
+def test_brain_declined_confirmation_auto_send_on_never_presses_enter(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: []\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+    presses = []
+    skill = SendWhatsAppSkill(
+        contacts_path,
+        launcher=lambda _: True,
+        window_details=lambda: ("WhatsApp.Root", "WhatsApp"),
+        enter_presser=lambda: presses.append(True),
+        sleeper=lambda _: None,
+    )
+    skill.auto_send = True
+    provider = FakeProvider(
+        ModelDecision(
+            tool_name="send_whatsapp",
+            arguments={"contact": "Ali", "text": "Hello"},
+        )
+    )
+    brain = Brain(
+        provider,
+        {skill.name: skill},
+        ActionLogger(tmp_path / "actions.jsonl"),
+        confirm_fn=lambda prompt: False,
+    )
+
+    reply = brain.process("Ali ko message bhejo")
+
+    assert reply == "The WhatsApp message was declined."
+    assert presses == []

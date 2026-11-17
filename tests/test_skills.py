@@ -84,7 +84,10 @@ def test_send_whatsapp_launcher_error(tmp_path):
     skill = SendWhatsAppSkill(
         contacts_path,
         launcher=lambda _: (_ for _ in ()).throw(OSError("launch failed")),
+        enter_presser=lambda: (_ for _ in ()).throw(AssertionError("Enter must not be pressed")),
     )
+    skill.auto_send = True
+    skill.send_delay_seconds = 0
     prepared = skill.prepare(contact="Ali", text="Hello")
 
     result = skill.run(**prepared.params)
@@ -169,3 +172,109 @@ def test_send_whatsapp_empty_text(tmp_path):
 
     assert prepared.status == "error"
     assert "cannot be empty" in prepared.reply
+
+
+def test_auto_send_off_does_not_check_window(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: []\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+    presses = []
+    skill = SendWhatsAppSkill(
+        contacts_path,
+        launcher=lambda _: True,
+        window_details=lambda: ("WhatsApp.Root", "WhatsApp"),
+        enter_presser=lambda: presses.append(True),
+        sleeper=lambda _: None,
+    )
+    skill.auto_send = False
+    prepared = skill.prepare(contact="Ali", text="Hello")
+
+    result = skill.run(**prepared.params)
+
+    assert result.reply == "WhatsApp was opened with the message ready; press Send."
+    assert result.auto_send_attempted is False
+    assert presses == []
+
+
+def test_auto_send_wrong_foreground_window_logs_details(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: []\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+    presses = []
+    skill = SendWhatsAppSkill(
+        contacts_path,
+        launcher=lambda _: True,
+        window_details=lambda: ("chrome.exe", "Google Chrome"),
+        enter_presser=lambda: presses.append(True),
+        sleeper=lambda _: None,
+    )
+    skill.auto_send = True
+    skill.send_delay_seconds = 0
+    prepared = skill.prepare(contact="Ali", text="Hello")
+
+    result = skill.run(**prepared.params)
+
+    assert result.auto_send_attempted is True
+    assert result.auto_send_window_check_passed is False
+    assert result.foreground_process == "chrome.exe"
+    assert result.foreground_title == "Google Chrome"
+    assert "needs you to press Send" in result.reply
+    assert presses == []
+
+
+def test_auto_send_library_missing_needs_manual_send(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: []\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+
+    def missing_library():
+        raise ImportError("pywinauto is not installed")
+
+    skill = SendWhatsAppSkill(
+        contacts_path,
+        launcher=lambda _: True,
+        window_details=lambda: ("WhatsApp.Root", "WhatsApp"),
+        enter_presser=missing_library,
+        sleeper=lambda _: None,
+    )
+    skill.auto_send = True
+    skill.send_delay_seconds = 0
+    prepared = skill.prepare(contact="Ali", text="Hello")
+
+    result = skill.run(**prepared.params)
+
+    assert result.auto_send_attempted is True
+    assert result.auto_send_window_check_passed is True
+    assert result.reply == "The message is typed but needs you to press Send."
+
+
+def test_auto_send_presses_enter_once_on_matching_window(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: []\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+    presses = []
+    skill = SendWhatsAppSkill(
+        contacts_path,
+        launcher=lambda _: True,
+        window_details=lambda: ("WhatsApp.Root", "WhatsApp"),
+        enter_presser=lambda: presses.append(True),
+        sleeper=lambda _: None,
+    )
+    skill.auto_send = True
+    skill.send_delay_seconds = 0
+    prepared = skill.prepare(contact="Ali", text="Hello")
+
+    result = skill.run(**prepared.params)
+
+    assert presses == [True]
+    assert result.reply == "Enter pressed in WhatsApp."
+    assert result.auto_send_attempted is True
+    assert result.auto_send_window_check_passed is True

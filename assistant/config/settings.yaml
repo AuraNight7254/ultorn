@@ -4,3 +4,5 @@ provider:
   name: ollama
   model: llama3.1:8b
   base_url: http://localhost:11434
+whatsapp_auto_send: false
+whatsapp_send_delay_seconds: 3

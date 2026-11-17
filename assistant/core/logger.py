@@ -17,6 +17,10 @@ class ActionLogger:
             "skill": skill,
             "params": params,
             "confirmed": confirmed,
+            "auto_send_attempted": result.auto_send_attempted,
+            "auto_send_window_check_passed": result.auto_send_window_check_passed,
+            "foreground_process": result.foreground_process,
+            "foreground_title": result.foreground_title,
             "result": {"ok": result.ok, "reply": result.reply},
         }
         with self.path.open("a", encoding="utf-8") as log_file:

@@ -36,9 +36,16 @@ def run():
 
     provider = create_provider(provider_settings)
     logger = ActionLogger(ROOT / "logs" / "actions.jsonl")
+    skills = discover_skills()
+    send_whatsapp = skills.get("send_whatsapp")
+    if send_whatsapp is not None:
+        send_whatsapp.auto_send = bool(settings.get("whatsapp_auto_send", False))
+        send_whatsapp.send_delay_seconds = float(
+            settings.get("whatsapp_send_delay_seconds", 3)
+        )
     brain = Brain(
         provider=provider,
-        skills=discover_skills(),
+        skills=skills,
         logger=logger,
         assistant_name=assistant_name,
     )

@@ -125,7 +125,12 @@ class Brain:
                 f"{prompt_params['name']} ({prompt_params['number']})?"
             )
             if not self.confirm_fn(prompt):
-                return Result(ok=False, reply="The WhatsApp message was declined."), False
+                return Result(
+                    ok=False,
+                    reply="The WhatsApp message was declined.",
+                    auto_send_attempted=False,
+                    auto_send_window_check_passed=None,
+                ), False
             return skill.run(**(prepared.params or original_parameters)), True
 
         return skill.run(**(prepared.params or original_parameters)), False

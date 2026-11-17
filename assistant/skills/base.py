@@ -10,6 +10,10 @@ import yaml
 class Result:
     ok: bool
     reply: str
+    auto_send_attempted: bool = False
+    auto_send_window_check_passed: bool | None = None
+    foreground_process: str | None = None
+    foreground_title: str | None = None
 
 
 @dataclass(frozen=True)
