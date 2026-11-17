@@ -11,6 +11,7 @@ from assistant.core.providers.groq import GroqProvider
 from assistant.core.confirm import confirm_action
 from assistant.core.registry import discover_skills
 from assistant.skills.base import Result, Skill
+from assistant.skills.send_whatsapp import SendWhatsAppSkill
 
 
 class FakeProvider:
@@ -163,7 +164,7 @@ def test_action_logger_writes_valid_json_lines(tmp_path):
 def test_registry_auto_discovers_phase_one_skills():
     skills = discover_skills()
 
-    assert set(skills) == {"get_time", "open_app", "open_website"}
+    assert set(skills) == {"get_time", "open_app", "open_website", "send_whatsapp"}
 
 
 def test_groq_provider_maps_http_429_to_rate_limit(monkeypatch):
@@ -181,3 +182,67 @@ def test_groq_provider_maps_http_429_to_rate_limit(monkeypatch):
         assert str(error) == "Groq is rate-limited; please try again shortly."
     else:
         raise AssertionError("Expected Groq rate-limit handling")
+
+
+def test_brain_declines_whatsapp_confirmation(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: ["علی"]\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+    launched = []
+    skill = SendWhatsAppSkill(contacts_path, launcher=lambda url: launched.append(url) or True)
+    provider = FakeProvider(
+        ModelDecision(
+            tool_name="send_whatsapp",
+            arguments={"contact": "Ali", "text": "Main late hoon"},
+        )
+    )
+    brain = Brain(
+        provider,
+        {skill.name: skill},
+        ActionLogger(tmp_path / "actions.jsonl"),
+        confirm_fn=lambda prompt: False,
+    )
+
+    reply = brain.process("Ali ko message bhejo")
+
+    assert reply == "The WhatsApp message was declined."
+    assert launched == []
+
+
+def test_brain_asks_which_contact_for_alias_ambiguity(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n'
+        '  "Ali One":\n'
+        '    aliases: ["Ali"]\n'
+        '    number: "+923001111111"\n'
+        '  "Ali Two":\n'
+        '    aliases: ["Ali"]\n'
+        '    number: "+923002222222"\n',
+        encoding="utf-8",
+    )
+    skill = SendWhatsAppSkill(contacts_path, launcher=lambda _: True)
+    provider = FakeProvider(
+        ModelDecision(
+            tool_name="send_whatsapp",
+            arguments={"contact": "Ali", "text": "Hello"},
+        )
+    )
+    choice_calls = []
+    brain = Brain(
+        provider,
+        {skill.name: skill},
+        ActionLogger(tmp_path / "actions.jsonl"),
+        confirm_fn=lambda prompt: True,
+        choice_fn=lambda prompt, choices: (
+            choice_calls.append((prompt, choices)) or "Ali Two (+923002222222)"
+        ),
+    )
+
+    reply = brain.process("Ali ko message bhejo")
+
+    assert "press Send" in reply
+    assert choice_calls[0][0] == "Which one?"
+    assert len(choice_calls[0][1]) == 2

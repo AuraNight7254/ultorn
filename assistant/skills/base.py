@@ -12,11 +12,22 @@ class Result:
     reply: str
 
 
+@dataclass(frozen=True)
+class PreparedAction:
+    status: str
+    reply: str = ""
+    params: dict[str, Any] | None = None
+    candidates: tuple[dict[str, Any], ...] = ()
+
+
 class Skill(ABC):
     name: str
     description: str
     parameters: dict[str, Any]
     risk: str
+
+    def prepare(self, **params) -> PreparedAction:
+        return PreparedAction(status="ready", params=dict(params))
 
     @abstractmethod
     def run(self, **params) -> Result:

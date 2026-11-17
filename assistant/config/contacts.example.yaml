@@ -1,0 +1,10 @@
+contacts:
+  "Ali":
+    aliases:
+      - "Ali Khan"
+      - "علی"
+    number: "+923001234567"
+  "Sample Friend":
+    aliases:
+      - "دوست"
+    number: "+923009876543"

@@ -1,4 +1,6 @@
 .env
+config/contacts.yaml
+assistant/config/contacts.yaml
 *.pyc
 logs/
 __pycache__/

@@ -3,7 +3,8 @@ from typing import Any
 
 from assistant.core.logger import ActionLogger
 from assistant.core.providers.base import Provider, ProviderError, RateLimitError
-from assistant.skills.base import Result, Skill
+from assistant.core.confirm import ask_choice, confirm_action
+from assistant.skills.base import PreparedAction, Result, Skill
 
 
 class Brain:
@@ -13,11 +14,15 @@ class Brain:
         skills: dict[str, Skill],
         logger: ActionLogger,
         assistant_name: str = "ultron",
+        confirm_fn=confirm_action,
+        choice_fn=ask_choice,
     ):
         self.provider = provider
         self.skills = skills
         self.logger = logger
         self.assistant_name = assistant_name
+        self.confirm_fn = confirm_fn
+        self.choice_fn = choice_fn
 
     def process(self, command: str) -> str:
         skill_name = None
@@ -44,7 +49,37 @@ class Brain:
                         reply="I couldn't safely match that request to an available action.",
                     )
                 else:
-                    result = skill.run(**parameters)
+                    prepared = skill.prepare(**parameters)
+                    if prepared.status == "ambiguous":
+                        choices = [
+                            f"{candidate['name']} ({candidate['number']})"
+                            for candidate in prepared.candidates
+                        ]
+                        selected = self.choice_fn(
+                            "Which one?",
+                            choices,
+                        )
+                        if selected is None:
+                            result = Result(ok=False, reply="No contact was selected.")
+                        else:
+                            selected_candidate = next(
+                                candidate
+                                for candidate in prepared.candidates
+                                if f"{candidate['name']} ({candidate['number']})" == selected
+                            )
+                            prepared = skill.prepare(
+                                **parameters,
+                                contact_choice=selected_candidate["name"],
+                            )
+                            result, confirmed = self._execute_prepared(
+                                skill,
+                                prepared,
+                                parameters,
+                            )
+                    elif prepared.status != "ready":
+                        result = Result(ok=False, reply=prepared.reply)
+                    else:
+                        result, confirmed = self._execute_prepared(skill, prepared, parameters)
             self.logger.log(
                 raw_command=command,
                 skill=skill_name,
@@ -72,6 +107,29 @@ class Brain:
                 ok=False,
             )
 
+    def _execute_prepared(
+        self,
+        skill: Skill,
+        prepared: PreparedAction,
+        original_parameters: dict[str, Any],
+    ) -> tuple[Result, bool]:
+        if prepared.status == "ambiguous":
+            return Result(ok=False, reply=prepared.reply), False
+        if prepared.status != "ready":
+            return Result(ok=False, reply=prepared.reply), False
+
+        if skill.risk == "confirm":
+            prompt_params = prepared.params or original_parameters
+            prompt = (
+                f"Send '{prompt_params['text']}' to "
+                f"{prompt_params['name']} ({prompt_params['number']})?"
+            )
+            if not self.confirm_fn(prompt):
+                return Result(ok=False, reply="The WhatsApp message was declined."), False
+            return skill.run(**(prepared.params or original_parameters)), True
+
+        return skill.run(**(prepared.params or original_parameters)), False
+
     def _log_provider_error(self, command, skill_name, parameters, confirmed, reply, ok):
         result = Result(ok=ok, reply=_first_sentence(reply))
         self.logger.log(
@@ -89,6 +147,7 @@ class Brain:
             "Understand commands in English, Urdu, and Roman Urdu, including mixed language. "
             "Use only the supplied tools for desktop actions. Never invent apps or websites; "
             "if an item is not available in the tool configuration, ask the user to configure it. "
+            "Keep WhatsApp message text in the user's original language and wording. "
             "Do not suggest or produce shell commands. For non-action replies, answer in one short sentence."
         )
 

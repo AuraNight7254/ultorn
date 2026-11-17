@@ -3,6 +3,8 @@ from datetime import datetime
 from assistant.skills.get_time import GetTimeSkill
 from assistant.skills.open_app import OpenAppSkill
 from assistant.skills.open_website import OpenWebsiteSkill
+from assistant.skills.send_whatsapp import SendWhatsAppSkill
+from assistant.core.contacts import load_contacts
 
 
 def test_open_app_launches_only_a_configured_target():
@@ -57,3 +59,113 @@ def test_get_time_returns_local_time():
 
     assert result.ok is True
     assert result.reply == "It's 9:05 AM."
+
+
+def test_send_whatsapp_declined_confirmation_is_handled_in_brain(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: ["علی"]\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+    launched = []
+    skill = SendWhatsAppSkill(contacts_path, launcher=lambda url: launched.append(url) or True)
+    prepared = skill.prepare(contact="Ali", text="Main late hoon")
+
+    assert prepared.status == "ready"
+    assert prepared.params["number"] == "+923001234567"
+
+
+def test_send_whatsapp_launcher_error(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: []\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+    skill = SendWhatsAppSkill(
+        contacts_path,
+        launcher=lambda _: (_ for _ in ()).throw(OSError("launch failed")),
+    )
+    prepared = skill.prepare(contact="Ali", text="Hello")
+
+    result = skill.run(**prepared.params)
+
+    assert result.ok is False
+    assert "couldn't open WhatsApp" in result.reply
+
+
+def test_send_whatsapp_encodes_urdu_text_as_utf8(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "علی":\n    aliases: ["Ali"]\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+    opened = []
+    skill = SendWhatsAppSkill(contacts_path, launcher=lambda url: opened.append(url) or True)
+    prepared = skill.prepare(contact="Ali", text="سلام، میں دیر سے آ رہا ہوں")
+
+    result = skill.run(**prepared.params)
+
+    assert result.ok is True
+    assert opened[0].startswith("whatsapp://send?phone=923001234567&text=")
+    assert "%20" in opened[0]
+    assert "%D8" in opened[0]
+    assert "press Send" in result.reply
+    assert "sent" not in result.reply.casefold()
+
+
+def test_send_whatsapp_missing_contacts_yaml(tmp_path):
+    skill = SendWhatsAppSkill(tmp_path / "contacts.yaml")
+
+    prepared = skill.prepare(contact="Ali", text="Hello")
+
+    assert prepared.status == "missing"
+    assert "contacts.example.yaml" in prepared.reply
+
+
+def test_invalid_number_in_contacts_yaml(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: []\n    number: "03001234567"\n',
+        encoding="utf-8",
+    )
+
+    try:
+        load_contacts(contacts_path)
+    except ValueError as error:
+        assert "invalid E.164" in str(error)
+    else:
+        raise AssertionError("Expected invalid E.164 number")
+
+
+def test_two_contacts_with_same_alias(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n'
+        '  "Ali One":\n'
+        '    aliases: ["Ali"]\n'
+        '    number: "+923001111111"\n'
+        '  "Ali Two":\n'
+        '    aliases: ["Ali"]\n'
+        '    number: "+923002222222"\n',
+        encoding="utf-8",
+    )
+    skill = SendWhatsAppSkill(contacts_path)
+
+    prepared = skill.prepare(contact="Ali", text="Hello")
+
+    assert prepared.status == "ambiguous"
+    assert len(prepared.candidates) == 2
+
+
+def test_send_whatsapp_empty_text(tmp_path):
+    contacts_path = tmp_path / "contacts.yaml"
+    contacts_path.write_text(
+        'contacts:\n  "Ali":\n    aliases: []\n    number: "+923001234567"\n',
+        encoding="utf-8",
+    )
+    skill = SendWhatsAppSkill(contacts_path)
+
+    prepared = skill.prepare(contact="Ali", text="   ")
+
+    assert prepared.status == "error"
+    assert "cannot be empty" in prepared.reply
