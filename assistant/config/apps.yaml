@@ -1,0 +1,16 @@
+apps:
+  notepad:
+    aliases:
+      - notepad
+      - text editor
+    target: notepad.exe
+
+websites:
+  google:
+    aliases:
+      - google
+    url: https://www.google.com
+  github:
+    aliases:
+      - github
+    url: https://github.com
