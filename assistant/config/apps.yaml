@@ -5,6 +5,12 @@ apps:
       - text editor
       - نوٹ پیڈ
     target: notepad.exe
+  chrome:
+    aliases:
+      - chrome
+      - google chrome
+      - browser
+    target: 'C:\Program Files\Google\Chrome\Application\chrome.exe'
 
 websites:
   google:
