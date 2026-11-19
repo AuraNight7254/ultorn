@@ -4,10 +4,14 @@ from pathlib import Path
 import yaml
 
 from assistant.core.brain import Brain
+from assistant.core.contacts import load_contacts
 from assistant.core.logger import ActionLogger
 from assistant.core.providers import create_provider
 from assistant.core.registry import discover_skills
+from assistant.io.hotkey import PushToTalk
+from assistant.io.stt import MicrophoneRecorder, SpeechTranscriber
 from assistant.io.text_io import read_command
+from assistant.skills.base import load_app_config
 
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -20,6 +24,29 @@ def load_settings():
     if not isinstance(settings, dict):
         raise ValueError("settings.yaml must contain a YAML mapping.")
     return settings
+
+
+def build_initial_prompt() -> str:
+    config = load_app_config()
+    names = []
+    for section in ("apps", "websites"):
+        entries = config.get(section, {})
+        if not isinstance(entries, dict):
+            continue
+        for name, details in entries.items():
+            names.append(str(name))
+            if isinstance(details, dict):
+                aliases = details.get("aliases", [])
+                if isinstance(aliases, list):
+                    names.extend(alias for alias in aliases if isinstance(alias, str))
+    try:
+        contacts = load_contacts()
+    except (OSError, ValueError):
+        contacts = {}
+    for contact in contacts.values():
+        names.append(contact.name)
+        names.extend(contact.aliases)
+    return ", ".join(dict.fromkeys(name for name in names if name.strip()))
 
 
 def run():
@@ -50,17 +77,61 @@ def run():
         assistant_name=assistant_name,
     )
 
+    push_to_talk = None
+    voice_settings = settings.get("voice", {})
+    if voice_settings.get("enabled", True):
+        model_directory = Path(
+            voice_settings.get("model_directory", "assistant/models/faster-whisper-small")
+        )
+        if not model_directory.is_absolute():
+            model_directory = ROOT / model_directory
+        transcriber = SpeechTranscriber(
+            model_name=voice_settings.get("stt_model", "small"),
+            language=voice_settings.get("stt_language", "ur"),
+            initial_prompt=build_initial_prompt(),
+            model_directory=model_directory,
+            silence_rms_threshold=float(
+                voice_settings.get("silence_rms_threshold", 0.005)
+            ),
+            no_speech_prob_threshold=float(
+                voice_settings.get("no_speech_prob_threshold", 0.6)
+            ),
+        )
+        recorder = MicrophoneRecorder(
+            device=voice_settings.get("mic_device"),
+            sample_rate=int(voice_settings.get("sample_rate", 16000)),
+        )
+
+        def process_voice_command(transcript):
+            print(brain.process(transcript))
+
+        push_to_talk = PushToTalk(
+            hotkey=voice_settings.get("hotkey", "ctrl+alt+space"),
+            recorder=recorder,
+            transcriber=transcriber,
+            on_command=process_voice_command,
+            on_message=print,
+            show_transcript=bool(voice_settings.get("show_transcript", True)),
+            max_hold_seconds=float(voice_settings.get("max_hold_seconds", 20)),
+            min_hold_seconds=float(voice_settings.get("min_hold_seconds", 0.25)),
+        )
+        push_to_talk.start()
+
     print(f"{assistant_name} is ready. Type 'exit' to quit.")
-    while True:
-        try:
-            command = read_command(assistant_name)
-        except EOFError:
-            break
-        if command is None:
-            continue
-        if command.casefold() in {"exit", "quit"}:
-            break
-        print(brain.process(command))
+    try:
+        while True:
+            try:
+                command = read_command(assistant_name)
+            except EOFError:
+                break
+            if command is None:
+                continue
+            if command.casefold() in {"exit", "quit"}:
+                break
+            print(brain.process(command))
+    finally:
+        if push_to_talk is not None:
+            push_to_talk.stop()
 
 
 if __name__ == "__main__":

@@ -6,3 +6,16 @@ provider:
   base_url: http://localhost:11434
 whatsapp_auto_send: false
 whatsapp_send_delay_seconds: 3
+voice:
+  enabled: true
+  show_transcript: true
+  hotkey: ctrl+alt+space
+  max_hold_seconds: 20
+  min_hold_seconds: 0.25
+  mic_device: null
+  sample_rate: 16000
+  silence_rms_threshold: 0.005
+  no_speech_prob_threshold: 0.6
+  stt_language: ur
+  stt_model: small
+  model_directory: assistant/models/faster-whisper-small

@@ -3,14 +3,17 @@ apps:
     aliases:
       - notepad
       - text editor
+      - نوٹ پیڈ
     target: notepad.exe
 
 websites:
   google:
     aliases:
       - google
+      - گوگل
     url: https://www.google.com
   github:
     aliases:
       - github
+      - گٹ ہب
     url: https://github.com

@@ -2,6 +2,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+import unicodedata
 
 import yaml
 
@@ -48,7 +49,7 @@ def load_app_config():
 
 
 def resolve_alias(items: dict, requested_name: str):
-    requested = requested_name.strip().casefold()
+    requested = normalize_alias(requested_name)
     for configured_name, details in items.items():
         if not isinstance(details, dict):
             continue
@@ -56,6 +57,11 @@ def resolve_alias(items: dict, requested_name: str):
         if not isinstance(aliases, list):
             continue
         candidates = [configured_name, *aliases]
-        if any(isinstance(alias, str) and alias.strip().casefold() == requested for alias in candidates):
+        if any(isinstance(alias, str) and normalize_alias(alias) == requested for alias in candidates):
             return configured_name, details
     return None, None
+
+
+def normalize_alias(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    return " ".join(normalized.strip().casefold().split())
