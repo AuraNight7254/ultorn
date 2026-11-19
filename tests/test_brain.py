@@ -1,4 +1,5 @@
 import json
+import io
 from urllib.request import Request
 from urllib.error import HTTPError
 
@@ -182,6 +183,41 @@ def test_groq_provider_maps_http_429_to_rate_limit(monkeypatch):
         assert str(error) == "Groq is rate-limited; please try again shortly."
     else:
         raise AssertionError("Expected Groq rate-limit handling")
+
+
+def test_groq_provider_explains_403_without_exposing_api_key(monkeypatch):
+    api_key = "gsk_test_key_for_redaction"
+    monkeypatch.setenv("GROQ_API_KEY", api_key)
+    body = json.dumps(
+        {
+            "error": {
+                "message": f"Key {api_key} cannot access this model.",
+                "code": "model_access_denied",
+            }
+        }
+    ).encode("utf-8")
+    provider = GroqProvider({"model": "openai/gpt-oss-20b"})
+
+    def fake_urlopen(request, timeout):
+        raise HTTPError(
+            request.full_url,
+            403,
+            "Forbidden",
+            {},
+            io.BytesIO(body),
+        )
+
+    monkeypatch.setattr("assistant.core.providers.groq.urlopen", fake_urlopen)
+
+    try:
+        provider.choose("open chrome", [], "Be concise.")
+    except ProviderError as error:
+        assert "openai/gpt-oss-20b" in str(error)
+        assert "model_access_denied" not in str(error)
+        assert api_key not in str(error)
+        assert "cannot access this model" in str(error)
+    else:
+        raise AssertionError("Expected a Groq 403 provider error")
 
 
 def test_groq_provider_reads_dotenv_and_posts_local_tool_schema(tmp_path, monkeypatch):

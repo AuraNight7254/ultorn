@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -50,6 +51,23 @@ class GroqProvider:
         except HTTPError as error:
             if error.code == 429:
                 raise RateLimitError("Groq is rate-limited; please try again shortly.") from error
+            if error.code == 401:
+                raise ProviderError(
+                    "Groq rejected the API key; check GROQ_API_KEY in .env or the environment."
+                ) from error
+            if error.code == 403:
+                detail = self._read_error_detail(error, api_key)
+                reason = (detail or error.reason).rstrip(" .!?")
+                raise ProviderError(
+                    f"Groq denied access to model '{self.model}' (HTTP 403): {reason}; "
+                    "check that the API key is active and allowed to use this model."
+                ) from error
+            if error.code == 404:
+                detail = self._read_error_detail(error, api_key)
+                reason = detail or error.reason
+                raise ProviderError(
+                    f"Groq could not find model '{self.model}' (HTTP 404): {reason}."
+                ) from error
             raise ProviderError(f"Groq returned HTTP {error.code}: {error.reason}.") from error
         except (URLError, TimeoutError) as error:
             raise ProviderError("I couldn't reach Groq; please check your connection.") from error
@@ -85,6 +103,25 @@ class GroqProvider:
         if not isinstance(content, str):
             raise ProviderError("Groq returned an invalid response.")
         return ModelDecision(text=content)
+
+    @staticmethod
+    def _read_error_detail(error: HTTPError, api_key: str) -> str | None:
+        try:
+            response_body = json.loads(error.read().decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError, OSError):
+            return None
+        if not isinstance(response_body, dict):
+            return None
+        error_body = response_body.get("error")
+        if not isinstance(error_body, dict):
+            return None
+        detail = error_body.get("message")
+        if not isinstance(detail, str):
+            return None
+        detail = detail.replace(api_key, "[redacted]")
+        detail = re.sub(r"\bgsk_[A-Za-z0-9_-]{16,}\b", "[redacted]", detail)
+        detail = " ".join(detail.split())
+        return detail[:300] or None
 
     def _read_api_key(self) -> str | None:
         environment_key = os.environ.get("GROQ_API_KEY")
