@@ -4,7 +4,7 @@ from urllib.error import HTTPError
 
 from assistant.core.brain import Brain
 from assistant.core.logger import ActionLogger
-from assistant.core.providers.base import ModelDecision, RateLimitError
+from assistant.core.providers.base import ModelDecision, ProviderError, RateLimitError
 from assistant.core.providers import create_provider
 from assistant.core.providers.ollama import OllamaProvider
 from assistant.core.providers.groq import GroqProvider
@@ -169,7 +169,7 @@ def test_registry_auto_discovers_phase_one_skills():
 
 def test_groq_provider_maps_http_429_to_rate_limit(monkeypatch):
     provider = GroqProvider({"model": "test-tool-model"})
-    provider.api_key = "test-key"
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
 
     def fake_urlopen(request, timeout):
         raise HTTPError(request.full_url, 429, "Too Many Requests", {}, None)
@@ -182,6 +182,105 @@ def test_groq_provider_maps_http_429_to_rate_limit(monkeypatch):
         assert str(error) == "Groq is rate-limited; please try again shortly."
     else:
         raise AssertionError("Expected Groq rate-limit handling")
+
+
+def test_groq_provider_reads_dotenv_and_posts_local_tool_schema(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text('GROQ_API_KEY="test-key"\n', encoding="utf-8")
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    calls = []
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "name": "get_time",
+                                            "arguments": "{}",
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(request, timeout):
+        calls.append((request, timeout))
+        return FakeResponse()
+
+    monkeypatch.setattr("assistant.core.providers.groq.urlopen", fake_urlopen)
+    provider = GroqProvider(
+        {"model": "llama-3.3-70b-versatile"},
+        env_path=env_path,
+    )
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "get_time",
+                "description": "Get local time.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+
+    decision = provider.choose("what time is it?", tools, "Be concise.")
+
+    request, timeout = calls[0]
+    request_body = json.loads(request.data.decode("utf-8"))
+    assert len(calls) == 1
+    assert timeout == 60
+    assert request.get_header("Authorization") == "Bearer test-key"
+    assert request_body["model"] == "llama-3.3-70b-versatile"
+    assert request_body["tools"] == tools
+    assert decision == ModelDecision(tool_name="get_time", arguments={})
+
+
+def test_groq_provider_environment_key_overrides_dotenv(tmp_path, monkeypatch):
+    env_path = tmp_path / ".env"
+    env_path.write_text("GROQ_API_KEY=file-key\n", encoding="utf-8")
+    monkeypatch.setenv("GROQ_API_KEY", "environment-key")
+    provider = GroqProvider({"model": "test-model"}, env_path=env_path)
+
+    assert provider._read_api_key() == "environment-key"
+
+
+def test_groq_provider_without_key_returns_provider_error(tmp_path, monkeypatch):
+    monkeypatch.delenv("GROQ_API_KEY", raising=False)
+    provider = GroqProvider(
+        {"model": "test-model"},
+        env_path=tmp_path / "missing.env",
+    )
+
+    try:
+        provider.choose("hello", [], "Be concise.")
+    except ProviderError as error:
+        assert str(error) == "GROQ_API_KEY is not configured in .env."
+    else:
+        raise AssertionError("Expected a missing Groq key error")
+
+
+def test_provider_is_selected_from_groq_or_ollama_configuration():
+    groq = create_provider(
+        {"name": "groq", "model": "llama-3.3-70b-versatile"}
+    )
+    ollama = create_provider({"name": "ollama", "model": "llama3.1:8b"})
+
+    assert isinstance(groq, GroqProvider)
+    assert isinstance(ollama, OllamaProvider)
 
 
 def test_brain_declines_whatsapp_confirmation(tmp_path):

@@ -1,5 +1,6 @@
 import json
 import os
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -9,15 +10,20 @@ from assistant.core.providers.base import ModelDecision, ProviderError, RateLimi
 class GroqProvider:
     provider_name = "groq"
 
-    def __init__(self, settings):
+    def __init__(self, settings, env_path: Path | None = None):
         self.model = settings.get("model")
         self.base_url = settings.get("base_url", "https://api.groq.com/openai/v1").rstrip("/")
         self.timeout = settings.get("timeout", 60)
-        self.api_key = settings.get("api_key") or os.environ.get("GROQ_API_KEY")
+        self.env_path = (
+            Path(env_path)
+            if env_path is not None
+            else Path(__file__).resolve().parents[3] / ".env"
+        )
 
     def choose(self, command, tools, system_prompt):
-        if not self.api_key:
-            raise ProviderError("GROQ_API_KEY is not configured.")
+        api_key = self._read_api_key()
+        if not api_key:
+            raise ProviderError("GROQ_API_KEY is not configured in .env.")
         if not self.model:
             raise ProviderError("Groq model is not configured.")
 
@@ -33,7 +39,7 @@ class GroqProvider:
             f"{self.base_url}/chat/completions",
             data=json.dumps(request_body).encode("utf-8"),
             headers={
-                "Authorization": f"Bearer {self.api_key}",
+                "Authorization": f"Bearer {api_key}",
                 "Content-Type": "application/json",
             },
             method="POST",
@@ -54,6 +60,8 @@ class GroqProvider:
             message = payload["choices"][0]["message"]
         except (KeyError, IndexError, TypeError) as error:
             raise ProviderError("Groq returned an invalid response.") from error
+        if not isinstance(message, dict):
+            raise ProviderError("Groq returned an invalid response.")
 
         tool_calls = message.get("tool_calls") or []
         if not isinstance(tool_calls, list):
@@ -77,3 +85,22 @@ class GroqProvider:
         if not isinstance(content, str):
             raise ProviderError("Groq returned an invalid response.")
         return ModelDecision(text=content)
+
+    def _read_api_key(self) -> str | None:
+        environment_key = os.environ.get("GROQ_API_KEY")
+        if environment_key and environment_key.strip():
+            return environment_key.strip()
+        try:
+            with self.env_path.open(encoding="utf-8") as env_file:
+                for line in env_file:
+                    entry = line.strip()
+                    if not entry or entry.startswith("#") or "=" not in entry:
+                        continue
+                    name, value = entry.split("=", 1)
+                    if name.strip() == "GROQ_API_KEY":
+                        return value.strip().strip("\"'")
+        except FileNotFoundError:
+            return None
+        except OSError as error:
+            raise ProviderError("I couldn't read the Groq API key from .env.") from error
+        return None
