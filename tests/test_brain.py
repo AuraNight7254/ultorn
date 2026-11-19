@@ -94,6 +94,8 @@ def test_ollama_provider_posts_tool_schemas_and_parses_tool_call(monkeypatch):
     captured = {}
 
     class FakeResponse:
+        status = 200
+
         def __enter__(self):
             return self
 
@@ -173,30 +175,31 @@ def test_groq_provider_maps_http_429_to_rate_limit(monkeypatch):
     monkeypatch.setenv("GROQ_API_KEY", "test-key")
 
     def fake_urlopen(request, timeout):
-        raise HTTPError(request.full_url, 429, "Too Many Requests", {}, None)
+        body = b'{"error":{"message":"rate limit exceeded"}}'
+        raise HTTPError(
+            request.full_url,
+            429,
+            "Too Many Requests",
+            {},
+            io.BytesIO(body),
+        )
 
     monkeypatch.setattr("assistant.core.providers.groq.urlopen", fake_urlopen)
 
     try:
         provider.choose("hello", [], "Be concise.")
     except RateLimitError as error:
-        assert str(error) == "Groq is rate-limited; please try again shortly."
+        assert "Groq is rate-limited (HTTP 429):" in str(error)
+        assert "rate limit" in str(error)
     else:
         raise AssertionError("Expected Groq rate-limit handling")
 
 
-def test_groq_provider_explains_403_without_exposing_api_key(monkeypatch):
+def test_groq_provider_reports_first_300_chars_of_403_body_without_key(monkeypatch):
     api_key = "gsk_test_key_for_redaction"
     monkeypatch.setenv("GROQ_API_KEY", api_key)
-    body = json.dumps(
-        {
-            "error": {
-                "message": f"Key {api_key} cannot access this model.",
-                "code": "model_access_denied",
-            }
-        }
-    ).encode("utf-8")
-    provider = GroqProvider({"model": "openai/gpt-oss-20b"})
+    body = (f"Denied {api_key} " + "x" * 400).encode("utf-8")
+    provider = GroqProvider({"model": "llama-3.3-70b-versatile"})
 
     def fake_urlopen(request, timeout):
         raise HTTPError(
@@ -212,10 +215,9 @@ def test_groq_provider_explains_403_without_exposing_api_key(monkeypatch):
     try:
         provider.choose("open chrome", [], "Be concise.")
     except ProviderError as error:
-        assert "openai/gpt-oss-20b" in str(error)
-        assert "model_access_denied" not in str(error)
+        expected_body = f"Denied [redacted] " + "x" * (300 - len("Denied [redacted] "))
+        assert str(error) == f"Groq returned HTTP 403: {expected_body}"
         assert api_key not in str(error)
-        assert "cannot access this model" in str(error)
     else:
         raise AssertionError("Expected a Groq 403 provider error")
 
@@ -227,6 +229,8 @@ def test_groq_provider_reads_dotenv_and_posts_local_tool_schema(tmp_path, monkey
     calls = []
 
     class FakeResponse:
+        status = 200
+
         def __enter__(self):
             return self
 
@@ -280,9 +284,43 @@ def test_groq_provider_reads_dotenv_and_posts_local_tool_schema(tmp_path, monkey
     assert len(calls) == 1
     assert timeout == 60
     assert request.get_header("Authorization") == "Bearer test-key"
+    assert request.get_header("User-agent") == "ultron/0.1"
     assert request_body["model"] == "llama-3.3-70b-versatile"
     assert request_body["tools"] == tools
     assert decision == ModelDecision(tool_name="get_time", arguments={})
+
+
+def test_groq_provider_rejects_non_200_response_and_shows_body(monkeypatch):
+    api_key = "gsk_test_non_200_key"
+    monkeypatch.setenv("GROQ_API_KEY", api_key)
+    provider = GroqProvider({"model": "test-model"})
+
+    class FakeResponse:
+        status = 201
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return f"created, but not accepted; key={api_key}".encode("utf-8")
+
+    monkeypatch.setattr(
+        "assistant.core.providers.groq.urlopen",
+        lambda request, timeout: FakeResponse(),
+    )
+
+    try:
+        provider.choose("hello", [], "Be concise.")
+    except ProviderError as error:
+        assert str(error) == (
+            "Groq returned HTTP 201: created, but not accepted; key=[redacted]"
+        )
+        assert api_key not in str(error)
+    else:
+        raise AssertionError("Expected non-200 response to fail")
 
 
 def test_groq_provider_environment_key_overrides_dotenv(tmp_path, monkeypatch):
